@@ -1,7 +1,7 @@
 #include "cinder/app/AppNative.h"
 #include "cinder/gl/gl.h"
 #include "cinder/gl/Texture.h"
-#include "ps3eye.h"
+#include "PS3EyePair.h"
 
 using namespace ci;
 using namespace ci::app;
@@ -24,12 +24,11 @@ class PS3EyeStereoDepthApp : public AppNative {
     void eyeUpdateThreadFn();
     
     bool stopThreads = FALSE;
-    std::vector<ps3eye::PS3EYECam::PS3EYERef> cameraPair;
     std::vector<Surface> cameraFrames;
     std::thread devicesUpdateThread;
-    std::vector<uint8_t *> frameMemPtrs;
     std::vector<gl::Texture> textures;
     std::vector<WindowRef> windowRefs;
+    PS3EyePair camPair;
   private:
     void updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index);
 };
@@ -46,10 +45,7 @@ void PS3EyeStereoDepthApp::setup()
     
     // Get the found PS3Eyes and try to initialize.
     std::vector<ps3eye::PS3EYECam::PS3EYERef> devices(ps3eye::PS3EYECam::getDevices());
-    if (devices.size() >= 1) {
-        cameraPair.push_back(devices.at(0));
-        cameraPair.push_back(devices.at(1));
-        
+    if (camPair.size() >= 1) {
         
         /* @todo: It would be cool to make this more dynamic somehow but I couldn't figure out how.  So each window has a hardcoded draw function and window
             creation. */
@@ -63,20 +59,17 @@ void PS3EyeStereoDepthApp::setup()
         camWindow2->connectDraw(&PS3EyeStereoDepthApp::drawCamera2, this);
         windowRefs.push_back(camWindow2);
         
-        for_each(devices.begin(), devices.end(), [windowHeight, windowWidth, this]
-                 (ps3eye::PS3EYECam::PS3EYERef eyeRef) {
-                     // Initialize the camera refs with window dimensions,
-                     // and create frame memory bitmap for each, then  start
-                     // the threads for each one.
-                     if (eyeRef->init(windowWidth, windowHeight, 60)) {
-                         // Pad the data to 4 bytes per pixel for fast 4-byte indexing.
-                         eyeRef->start();
-                         frameMemPtrs.push_back(new uint8_t[eyeRef->getWidth() * eyeRef->getHeight() * 4]);
-                         cameraFrames.push_back(Surface(frameMemPtrs.back(), eyeRef->getWidth(), eyeRef->getHeight(), eyeRef->getWidth() * 4, SurfaceChannelOrder::BGRA));
-                         textures.push_back(gl::Texture{});
-                     }
-                 });
-        devicesUpdateThread = std::thread(bind(&PS3EyeStereoDepthApp::eyeUpdateThreadFn, this));
+        camPair.init(windowWidth, windowHeight);
+        cameraFrames.assign(camPair.size(), Surface{});
+        textures.assign(camPair.size(), gl::Texture{});
+        vector<ps3eye::PS3EYECam::PS3EYERef> camRefs = camPair.getRefs();
+        ps3eye::PS3EYECam::PS3EYERef eyeRef;
+        for (int i = 0; i < camRefs.size(); ++i) {
+            eyeRef = camRefs[i];
+            uint8_t *frame = camPair.framePtrAt(i);
+            cameraFrames[i] = Surface(frame, eyeRef->getWidth(), eyeRef->getHeight(), eyeRef->getWidth() * 4, SurfaceChannelOrder::BGRA);
+        }        
+        camPair.start();
     }
 }
 
@@ -86,16 +79,16 @@ void PS3EyeStereoDepthApp::mouseDown( MouseEvent event )
 
 void PS3EyeStereoDepthApp::update()
 {
-    if (cameraPair.size() > 0) {
-        
-        int index = 0;
-        for_each(cameraPair.begin(), cameraPair.end(),
-                 [this, &index](ps3eye::PS3EYECam::PS3EYERef eyeRef) {
-                     if (eyeRef) {
-                         updateCameraRef(eyeRef, index);
-                     }
-                     ++index;
-                });
+    bool newFrame = FALSE;
+    if (camPair.size() > 0) {
+        vector<ps3eye::PS3EYECam::PS3EYERef> refs = camPair.getRefs();
+        for (int i = 0; i < camPair.size(); ++i) {
+            ps3eye::PS3EYECam::PS3EYERef eyeRef = refs[i];
+            newFrame = newFrame || eyeRef->isNewFrame();
+            if (newFrame) {
+                updateCameraRef(eyeRef, i);
+            }            
+        }
     }
 }
 
@@ -113,7 +106,7 @@ void PS3EyeStereoDepthApp::drawCamera2() {
 
 void PS3EyeStereoDepthApp::drawCamera(int index) {
 	// clear out the window with black
-	gl::clear( Color( 0, 0, 0 ) );
+    gl::clear( Color( 0, 0, index * 100 ) );
     gl::disableDepthRead();
     gl::disableDepthWrite();
     gl::enableAlphaBlending();
@@ -135,41 +128,15 @@ void PS3EyeStereoDepthApp::drawCamera(int index) {
 
 void PS3EyeStereoDepthApp::updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index)
 {
-    if (ref->isNewFrame()) {
-        console() << "new for " << index << endl;
-        auto frame = cameraFrames[index];
-        yuv422_to_rgba(ref->getLastFramePointer(), ref->getRowBytes(), frameMemPtrs[index], frame.getWidth(), frame.getHeight());
-        textures[index] = gl::Texture(frame);
-    }
+    console() << "new for " << index << endl;
+    auto frame = cameraFrames[index];
+    uint8 *frameMemPtr = camPair.framePtrAt(index);
+    yuv422_to_rgba(ref->getLastFramePointer(), ref->getRowBytes(), frameMemPtr, frame.getWidth(), frame.getHeight());
+    textures[index] = gl::Texture(frame);
 }
 
 void PS3EyeStereoDepthApp::shutdown() {
-    console() << "stopping" << endl;
-    stopThreads = TRUE;
-    devicesUpdateThread.join();
-    console() << "stopped thread" << endl;
-    for_each(cameraPair.begin(), cameraPair.end(),
-             [](ps3eye::PS3EYECam::PS3EYERef eyeRef){
-                 eyeRef->stop();
-             });
-    console() << "stopped cameras" << endl;
-    for_each(frameMemPtrs.begin(), frameMemPtrs.end(),
-             [](uint8_t *ptr) {
-                 delete[] ptr;
-             });
-    console() << "cleared memory" << endl;
-}
-
-void PS3EyeStereoDepthApp::eyeUpdateThreadFn() {
-    int updateCount = 0;
-    while (!stopThreads) {
-        ++updateCount;
-        bool res = ps3eye::PS3EYECam::updateDevices();
-        if (!res) {
-            break;
-        }
-    }
-    console() << "stopped" << endl;
+    camPair.stop();
 }
 
 static const int ITUR_BT_601_CY = 1220542;
