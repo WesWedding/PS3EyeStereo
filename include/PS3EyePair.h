@@ -6,8 +6,8 @@
 //
 //
 
-#ifndef __PS3EyePair__
-#define __PS3EyePair__
+#ifndef __PS3EyePair_h
+#define __PS3EyePair_h
 
 #include <iostream>
 #include <vector>

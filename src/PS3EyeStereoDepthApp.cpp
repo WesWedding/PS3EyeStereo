@@ -2,6 +2,7 @@
 #include "cinder/gl/gl.h"
 #include "cinder/gl/Texture.h"
 #include "PS3EyePair.h"
+#include "PS3EyeCalibration.h"
 
 using namespace ci;
 using namespace ci::app;
@@ -14,7 +15,6 @@ class PS3EyeStereoDepthApp : public AppNative {
 	void setup();
 	void mouseDown( MouseEvent event );	
 	void update();
-	void draw();
     void shutdown();
     
   protected:
@@ -24,12 +24,13 @@ class PS3EyeStereoDepthApp : public AppNative {
     void eyeUpdateThreadFn();
     
     bool stopThreads = FALSE;
-    std::vector<Surface> cameraFrames;
+    std::vector<Surface> cameraSurfaces;
     std::thread devicesUpdateThread;
-    std::vector<gl::Texture> textures;
+    std::vector<gl::Texture> displayTextures;
     std::vector<WindowRef> windowRefs;
     PS3EyePair camPair;
-  private:
+   private:
+    void calibrateCameras(void);
     void updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index);
 };
 
@@ -42,7 +43,7 @@ void PS3EyeStereoDepthApp::setup()
     // Since this window already exists, we're always going to push it immediately
     // and then assign camera one to it.
     windowRefs.push_back(getWindowIndex(0));
-    
+        
     // Get the found PS3Eyes and try to initialize.
     std::vector<ps3eye::PS3EYECam::PS3EYERef> devices(ps3eye::PS3EYECam::getDevices());
     if (camPair.size() >= 1) {
@@ -55,20 +56,21 @@ void PS3EyeStereoDepthApp::setup()
                                            [this] () {
                                                gl::clear(ColorA::gray(0.5f));
                                            });
-        camWindow2->setPos(getWindowIndex(0)->getPos() - Vec2i(windowWidth, 0));
+        camWindow2->setPos(getWindowIndex(0)->getPos() - ci::Vec2i(windowWidth, 0));
         camWindow2->connectDraw(&PS3EyeStereoDepthApp::drawCamera2, this);
         windowRefs.push_back(camWindow2);
         
         camPair.init(windowWidth, windowHeight);
-        cameraFrames.assign(camPair.size(), Surface{});
-        textures.assign(camPair.size(), gl::Texture{});
+        cameraSurfaces.assign(camPair.size(), Surface{});
+        displayTextures.assign(camPair.size(), gl::Texture{});
         vector<ps3eye::PS3EYECam::PS3EYERef> camRefs = camPair.getRefs();
         ps3eye::PS3EYECam::PS3EYERef eyeRef;
         for (int i = 0; i < camRefs.size(); ++i) {
             eyeRef = camRefs[i];
             uint8_t *frame = camPair.framePtrAt(i);
-            cameraFrames[i] = Surface(frame, eyeRef->getWidth(), eyeRef->getHeight(), eyeRef->getWidth() * 4, SurfaceChannelOrder::BGRA);
-        }        
+            cameraSurfaces[i] = Surface(frame, eyeRef->getWidth(), eyeRef->getHeight(), eyeRef->getWidth() * 4, SurfaceChannelOrder::BGRA);
+        }
+        
         camPair.start();
     }
 }
@@ -92,10 +94,6 @@ void PS3EyeStereoDepthApp::update()
     }
 }
 
-void PS3EyeStereoDepthApp::draw()
-{
-}
-
 void PS3EyeStereoDepthApp::drawCamera1() {
     drawCamera(0);
 }
@@ -114,7 +112,7 @@ void PS3EyeStereoDepthApp::drawCamera(int index) {
     
     gl::setMatricesWindow(getWindowWidth(), getWindowHeight());
     try {
-      texture = textures.at(index);
+      texture = displayTextures.at(index);
     }
     catch (...) {
         console() << "Missing texture" << endl;
@@ -126,13 +124,18 @@ void PS3EyeStereoDepthApp::drawCamera(int index) {
     }
 }
 
+
+void PS3EyeStereoDepthApp::calibrateCameras(void) {
+    PS3EyeCalibration calibrator{camPair};
+    
+}
+
 void PS3EyeStereoDepthApp::updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index)
 {
-    console() << "new for " << index << endl;
-    auto frame = cameraFrames[index];
+    auto frame = cameraSurfaces[index];
     uint8 *frameMemPtr = camPair.framePtrAt(index);
     yuv422_to_rgba(ref->getLastFramePointer(), ref->getRowBytes(), frameMemPtr, frame.getWidth(), frame.getHeight());
-    textures[index] = gl::Texture(frame);
+    displayTextures[index] = gl::Texture(frame);
 }
 
 void PS3EyeStereoDepthApp::shutdown() {
