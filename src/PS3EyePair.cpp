@@ -17,7 +17,7 @@ PS3EyePair::~PS3EyePair() {
 }
 
 
-int PS3EyePair::size(void) {
+int PS3EyePair::size(void) const {
     return camRefs.size();
 }
 

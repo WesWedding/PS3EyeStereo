@@ -25,7 +25,7 @@ public:
     void init(int index = -1);
     void stop(int index = -1);
     void start(int index = -1);
-    int size(void);
+    int size(void) const;
     uint8_t *framePtrAt(int index);
     std::vector<ps3eye::PS3EYECam::PS3EYERef> getRefs(void);
     

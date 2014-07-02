@@ -21,16 +21,16 @@ class PS3EyeStereoDepthApp : public AppNative {
     void drawCamera(int index);
     void drawCamera1(void);
     void drawCamera2(void);
-    void eyeUpdateThreadFn();
     
     bool stopThreads = FALSE;
     std::vector<Surface> cameraSurfaces;
-    std::thread devicesUpdateThread;
     std::vector<gl::Texture> displayTextures;
     std::vector<WindowRef> windowRefs;
     PS3EyePair camPair;
    private:
-    void calibrateCameras(void);
+    std::mutex frameMemMutex;
+    std::thread calibrationThread;
+    void calibrateCamerasThreadFn(void);
     void updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index);
 };
 
@@ -71,7 +71,9 @@ void PS3EyeStereoDepthApp::setup()
             cameraSurfaces[i] = Surface(frame, eyeRef->getWidth(), eyeRef->getHeight(), eyeRef->getWidth() * 4, SurfaceChannelOrder::BGRA);
         }
         
+        stopThreads = FALSE;
         camPair.start();
+        calibrationThread = thread(bind(&PS3EyeStereoDepthApp::calibrateCamerasThreadFn, this));
     }
 }
 
@@ -125,13 +127,33 @@ void PS3EyeStereoDepthApp::drawCamera(int index) {
 }
 
 
-void PS3EyeStereoDepthApp::calibrateCameras(void) {
+void PS3EyeStereoDepthApp::calibrateCamerasThreadFn(void) {
     PS3EyeCalibration calibrator{camPair};
-    
+    chrono::time_point<chrono::system_clock> time = chrono::system_clock::now();
+    while (!stopThreads) {
+        std::vector<ps3eye::PS3EYECam::PS3EYERef> refs = camPair.getRefs();
+        if (!calibrator.readyToCalibrate()) {
+            if (chrono::system_clock::now() >= time) {
+                frameMemMutex.lock();
+                                for (int camIndex = 0; camIndex < camPair.size(); ++camIndex) {
+                calibrator.generateCalibrationPointsFrame(camIndex, refs[camIndex]->getHeight() , refs[camIndex]->getWidth(), camPair.framePtrAt(camIndex), 9, 6, refs[camIndex]->getWidth() * refs[camIndex]->getHeight() * 4, TRUE);
+                }
+                frameMemMutex.unlock();
+                time += chrono::milliseconds(1000);
+            }
+        }
+        else {
+            for (int camIndex = 0; camIndex < camPair.size(); ++camIndex) {
+              calibrator.calibrate(camIndex, 9, 6, 1, refs[camIndex]->getHeight(), refs[camIndex]->getWidth());
+            }
+            break;
+        }
+    }
 }
 
 void PS3EyeStereoDepthApp::updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int index)
 {
+    std::lock_guard<std::mutex> lock(frameMemMutex);
     auto frame = cameraSurfaces[index];
     uint8 *frameMemPtr = camPair.framePtrAt(index);
     yuv422_to_rgba(ref->getLastFramePointer(), ref->getRowBytes(), frameMemPtr, frame.getWidth(), frame.getHeight());
@@ -139,6 +161,10 @@ void PS3EyeStereoDepthApp::updateCameraRef(ps3eye::PS3EYECam::PS3EYERef ref, int
 }
 
 void PS3EyeStereoDepthApp::shutdown() {
+    stopThreads = TRUE;
+    if (calibrationThread.joinable()) {
+        calibrationThread.join();
+    }
     camPair.stop();
 }
 
